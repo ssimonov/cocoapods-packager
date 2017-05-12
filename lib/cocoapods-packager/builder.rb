@@ -1,10 +1,11 @@
 module Pod
   class Builder
-    def initialize(source_dir, static_sandbox_root, dynamic_sandbox_root, public_headers_root, spec, embedded, mangle, dynamic, config, bundle_identifier, exclude_deps)
+    def initialize(source_dir, static_sandbox_root, dynamic_sandbox_root, public_headers_root, vendored_libraries, spec, embedded, mangle, dynamic, prelink, config, bundle_identifier, exclude_deps)
       @source_dir = source_dir
       @static_sandbox_root = static_sandbox_root
       @dynamic_sandbox_root = dynamic_sandbox_root
       @public_headers_root = public_headers_root
+      @vendored_libraries = vendored_libraries
       @spec = spec
       @embedded = embedded
       @mangle = mangle
@@ -12,6 +13,7 @@ module Pod
       @config = config
       @bundle_identifier = bundle_identifier
       @exclude_deps = exclude_deps
+      @prelink = prelink
     end
 
     def build(platform, library)
@@ -79,12 +81,10 @@ module Pod
     end
 
     def build_library(platform, defines, output)
-      static_libs = static_libs_in_sandbox
-
       if platform.name == :ios
-        build_static_lib_for_ios(static_libs, defines, output)
+        build_static_lib_for_ios(output)
       else
-        build_static_lib_for_mac(static_libs, output)
+        build_static_lib_for_mac(output)
       end
     end
 
@@ -129,19 +129,30 @@ module Pod
       end
     end
 
-    def build_static_lib_for_ios(static_libs, _defines, output)
-      return if static_libs.count == 0
-      `libtool -static -o #{@static_sandbox_root}/build/package.a #{static_libs.join(' ')}`
-
-      sim_libs = static_libs_in_sandbox('build-sim')
-      `libtool -static -o #{@static_sandbox_root}/build-sim/package.a #{sim_libs.join(' ')}`
-
-      `lipo #{@static_sandbox_root}/build/package.a #{@static_sandbox_root}/build-sim/package.a -create -output #{output}`
+    def build_static_lib_for_ios(output)
+      if @prelink
+        libs = ['build', 'build-sim'].map do |path|
+          "#{@static_sandbox_root}/#{path}/lib#{@spec.name}.a"
+        end
+      else
+        static_libs = static_libs_in_sandbox() | static_libs_in_sandbox('build-sim') | @vendored_libraries
+        libs = ios_architectures.map do |arch|
+          library = "#{@static_sandbox_root}/build/package-#{arch}.a"
+          `libtool -arch_only #{arch} -static -o #{library} #{static_libs.join(' ')}`
+          library
+        end
+      end
+        
+      `lipo -create -output #{output} #{libs.join(' ')}`
     end
 
-    def build_static_lib_for_mac(static_libs, output)
-      return if static_libs.count == 0
-      `libtool -static -o #{output} #{static_libs.join(' ')}`
+    def build_static_lib_for_mac(output)
+      if @prelink
+        FileUtils.copy("#{@static_sandbox_root}/build/lib#{@spec.name}.a", output)
+      else
+        static_libs = static_libs_in_sandbox() | @vendored_libraries
+        `libtool -static -o #{output} #{static_libs.join(' ')}`
+      end
     end
 
     def build_with_mangling(platform, options)
@@ -272,7 +283,15 @@ MAP
     end
 
     def ios_build_options
-      "ARCHS=\'x86_64 i386 arm64 armv7 armv7s\' OTHER_CFLAGS=\'-fembed-bitcode -Qunused-arguments\'"
+      return "ARCHS=\'#{ios_architectures.join(' ')}\' OTHER_CFLAGS=\'-fembed-bitcode -Qunused-arguments\'"
+    end
+    
+    def ios_architectures
+      archs = ['x86_64', 'i386', 'arm64', 'armv7', 'armv7s']
+      @vendored_libraries.each do |library|
+        archs = `lipo -info #{library}`.split & archs
+      end
+      archs
     end
 
     def xcodebuild(defines = '', args = '', build_dir = 'build', target = 'Pods-packager', project_root = @static_sandbox_root, config = @config)

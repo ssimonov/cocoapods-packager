@@ -15,6 +15,8 @@ module Pod
           ['--embedded',  'Generate embedded frameworks.'],
           ['--library',   'Generate static libraries.'],
           ['--dynamic',   'Generate dynamic framework.'],
+          ['--prelink',   'Perform a single object prelink'],
+          ['--symbols',   'Only export the provided symbols'],
           ['--local-source',     'Generate use local source file.'],
           ['--bundle-identifier', 'Bundle identifier for dynamic framework'],
           ['--exclude-deps', 'Exclude symbols from dependencies.'],
@@ -32,11 +34,15 @@ module Pod
         @dynamic = argv.flag?('dynamic')
         @local_source = argv.flag?('local-source')
         @mangle = argv.flag?('mangle', true)
+        @prelink = argv.flag?('prelink', false)
         @bundle_identifier = argv.option('bundle-identifier', nil)
         @exclude_deps = argv.flag?('exclude-deps', false)
         @name = argv.shift_argument
         @source = argv.shift_argument
         @spec_sources = argv.option('spec-sources', 'https://github.com/CocoaPods/Specs.git').split(',')
+        
+        symbols = argv.option('symbols', nil)
+        @symbols = File.absolute_path(symbols) unless symbols.nil?
 
         subspecs = argv.option('subspecs')
         @subspecs = subspecs.split(',') unless subspecs.nil?
@@ -52,7 +58,7 @@ module Pod
       def validate!
         super
         help! 'A podspec name or path is required.' unless @spec
-        help! 'podspec has binary-only depedencies, mangling not possible.' if @mangle && binary_only?(@spec)
+        help! 'podspec has binary-only depedencies, mangling not possible.' if @mangle and binary_only? @spec
         help! '--bundle-identifier option can only be used for dynamic frameworks' if @bundle_identifier && !@dynamic
         help! '--exclude-deps option can only be used for static libraries' if @exclude_deps && @dynamic
       end
@@ -86,7 +92,7 @@ module Pod
         end
 
         begin
-          perform_build(platform, static_sandbox, dynamic_sandbox)
+          perform_build(platform, static_sandbox, dynamic_sandbox, static_installer)
 
         ensure # in case the build fails; see Builder#xcodebuild.
           Pathname.new(config.sandbox_root).rmtree
@@ -140,23 +146,27 @@ module Pod
         [target_dir, work_dir]
       end
 
-      def perform_build(platform, static_sandbox, dynamic_sandbox)
+      def perform_build(platform, static_sandbox, dynamic_sandbox, static_installer)
         static_sandbox_root = config.sandbox_root.to_s
 
         if @dynamic
           static_sandbox_root = "#{static_sandbox_root}/#{static_sandbox.root.to_s.split('/').last}"
           dynamic_sandbox_root = "#{config.sandbox_root}/#{dynamic_sandbox.root.to_s.split('/').last}"
         end
+        
+        vendored_libs = vendored_libraries(static_installer, static_sandbox_root)
 
         builder = Pod::Builder.new(
           @source_dir,
           static_sandbox_root,
           dynamic_sandbox_root,
           static_sandbox.public_headers.root,
+          vendored_libs,
           @spec,
           @embedded,
           @mangle,
           @dynamic,
+          @prelink,
           @config,
           @bundle_identifier,
           @exclude_deps

@@ -102,6 +102,7 @@
 				9B89D2D819EFC04D00803D42 /* Resources */,
 				66E97541EE256003BD711EDA /* [CP] Embed Pods Frameworks */,
 				DFB55D7B0E04E9E06397977F /* [CP] Copy Pods Resources */,
+                B18BA44595A2C4ED19AED732 /* Embed Pods Frameworks */,
 			);
 			buildRules = (
 			);
